@@ -1,12 +1,25 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"time"
 )
+
+type PaymentData struct {
+	CorrelationId string  `json:"correlationId"`
+	Amount        float64 `json:"amount"`
+}
+
+type ForwardedPaymentData struct {
+	CorrelationId string  `json:"correlationId"`
+	Amount        float64 `json:"amount"`
+	RequestedAt   string  `json:"requestedAt"`
+}
 
 func paymentsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -15,7 +28,6 @@ func paymentsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	body, err := io.ReadAll(r.Body)
-
 	if err != nil {
 		log.Printf("Error reading request body: %v", err)
 		http.Error(w, "Error reading request body", http.StatusBadRequest)
@@ -23,20 +35,38 @@ func paymentsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	log.Printf("Received payment data: %s", string(body))
-
-	var jsonData map[string]interface{}
-
-	if err := json.Unmarshal(body, &jsonData); err != nil {
-		log.Printf("Warning: received non-JSON data or malformed JSON: %v", err)
-	} else {
-		prettyJson, _ := json.MarshalIndent(jsonData, "", " ")
-		log.Printf("Pretty JSON:\n%s", string(prettyJson))
+	var paymentData PaymentData
+	if err := json.Unmarshal(body, &paymentData); err != nil {
+		log.Printf("Error parsing JSON: %v", err)
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	forwardedData := ForwardedPaymentData{
+		CorrelationId: paymentData.CorrelationId,
+		Amount:        paymentData.Amount,
+		RequestedAt:   time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
+	}
+
+	jsonData, err := json.Marshal(forwardedData)
+
+	if err != nil {
+		log.Printf("Error marshaling JSON: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	resp, err := http.Post("http://localhost:8001/payments", "application/json", bytes.NewBuffer(jsonData))
+	log.Printf("Teste: %v", resp)
+	if err != nil {
+		log.Printf("Error sending request to localhost:8001: %v", err)
+		http.Error(w, "Error forwarding request", http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	log.Printf("Forwarded to localhost:8001, response status: %d", resp.StatusCode)
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `{"status": "received", "message": "Payment data logged successfully"}`)
 }
 
 func main() {
