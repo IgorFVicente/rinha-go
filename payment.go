@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,7 +19,6 @@ import (
 
 var (
 	healthCache = &HealthCache{}
-	db          *sql.DB
 	rdb         *redis.Client
 	ctx         = context.Background()
 )
@@ -31,24 +29,28 @@ const (
 	HEALTH_CHECK_INTERVAL  = 5 * time.Second
 	PAYMENT_QUEUE          = "payment_jobs"
 	RETRY_DELAY_QUEUE      = "payment_jobs_delayed"
+	PAYMENTS_KEY_PREFIX    = "payment:"
+	PAYMENTS_INDEX_KEY     = "payments_index"
 	MAX_RETRIES            = 3
 	RETRY_DELAY            = 2 * time.Second
 	WORKER_COUNT           = 39
 )
 
-func setupLogging() (*os.File, error) {
-	logFile, err := os.OpenFile("payment-service.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open log file: %v", err)
-	}
-
-	multiWriter := io.MultiWriter(os.Stdout, logFile)
-
-	log.SetOutput(multiWriter)
-
+func setupLogging() {
+	log.SetOutput(os.Stdout)
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	// logFile, err := os.OpenFile("payment-service.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("failed to open log file: %v", err)
+	// }
 
-	return logFile, nil
+	// multiWriter := io.MultiWriter(os.Stdout, logFile)
+
+	// log.SetOutput(multiWriter)
+
+	// log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	// return logFile, nil
 }
 
 func getEnv(key, defaultValue string) string {
@@ -74,102 +76,206 @@ func initRedis() error {
 	return nil
 }
 
-func initDatabase() error {
-	var err error
-	db, err = sql.Open("sqlite3", "./payments.db?_busy_timeout=30000&_journal_mode=WAL")
-	if err != nil {
-		return fmt.Errorf("failed to open database: %v", err)
-	}
+// func initDatabase() error {
+// 	var err error
+// 	db, err = sql.Open("sqlite3", "./payments.db?_busy_timeout=30000&_journal_mode=WAL")
+// 	if err != nil {
+// 		return fmt.Errorf("failed to open database: %v", err)
+// 	}
 
-	createTableSQL := `
-	CREATE TABLE IF NOT EXISTS payments (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		correlation_id TEXT NOT NULL,
-		amount REAL NOT NULL,
-		processor TEXT NOT NULL,
-		requested_at DATETIME NOT NULL
-	);`
+// 	createTableSQL := `
+// 	CREATE TABLE IF NOT EXISTS payments (
+// 		id INTEGER PRIMARY KEY AUTOINCREMENT,
+// 		correlation_id TEXT NOT NULL,
+// 		amount REAL NOT NULL,
+// 		processor TEXT NOT NULL,
+// 		requested_at DATETIME NOT NULL
+// 	);`
 
-	if _, err := db.Exec(createTableSQL); err != nil {
-		return fmt.Errorf("failed to create table: %v", err)
-	}
+// 	if _, err := db.Exec(createTableSQL); err != nil {
+// 		return fmt.Errorf("failed to create table: %v", err)
+// 	}
 
-	log.Println("Database initialized successfully")
-	return nil
-}
+// 	log.Println("Database initialized successfully")
+// 	return nil
+// }
+
+// func storePayment(correlationId string, amount float64, processor string, requestedAt time.Time) error {
+// 	insertSQL := `
+// 	INSERT INTO payments (correlation_id, amount, processor, requested_at)
+// 	VALUES (?, ?, ?, ?)`
+
+// 	_, err := db.Exec(insertSQL, correlationId, amount, processor, requestedAt)
+
+// 	if err != nil {
+// 		return fmt.Errorf("failed to store payment: %v", err)
+// 	}
+
+// 	log.Printf("Payment stored: %s, %.2f, %s", correlationId, amount, processor)
+// 	return nil
+// }
 
 func storePayment(correlationId string, amount float64, processor string, requestedAt time.Time) error {
-	insertSQL := `
-	INSERT INTO payments (correlation_id, amount, processor, requested_at)
-	VALUES (?, ?, ?, ?)`
+	payment := PaymentRecord{
+		CorrelationID: correlationId,
+		Amount:        amount,
+		Processor:     processor,
+		RequestedAt:   requestedAt,
+	}
 
-	_, err := db.Exec(insertSQL, correlationId, amount, processor, requestedAt)
+	paymentData, err := json.Marshal(payment)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payment: %v", err)
+	}
 
+	paymentKey := fmt.Sprintf("%s%s", PAYMENTS_KEY_PREFIX, correlationId)
+	err = rdb.Set(ctx, paymentKey, paymentData, 0).Err()
 	if err != nil {
 		return fmt.Errorf("failed to store payment: %v", err)
+	}
+
+	err = rdb.SAdd(ctx, PAYMENTS_INDEX_KEY, correlationId).Err()
+	if err != nil {
+		return fmt.Errorf("failed to add payment to index: %v", err)
 	}
 
 	log.Printf("Payment stored: %s, %.2f, %s", correlationId, amount, processor)
 	return nil
 }
 
+// func getPaymentsSummary(fromTime, toTime *time.Time) (PaymentSummaryResponse, error) {
+// 	var response PaymentSummaryResponse
+
+// 	baseQuery := `
+// 	SELECT
+// 		processor,
+// 		COUNT (*) as total_requests,
+// 		COALESCE(SUM(amount), 0) as total_amount
+// 	FROM payments
+// 	WHERE 1=1`
+
+// 	args := []interface{}{}
+
+// 	if fromTime != nil {
+// 		baseQuery += " AND requested_at >= ?"
+// 		args = append(args, fromTime.Format("2006-01-02 15:04:05.000+00:00"))
+// 	}
+
+// 	if toTime != nil {
+// 		baseQuery += " AND requested_at <= ?"
+// 		args = append(args, toTime.Format("2006-01-02 15:04:05.000+00:00"))
+// 	}
+
+// 	baseQuery += " GROUP BY processor"
+
+// 	rows, err := db.Query(baseQuery, args...)
+
+// 	log.Printf("TESTE IGOR")
+// 	log.Println(baseQuery)
+// 	log.Println(args)
+// 	log.Println(rows)
+
+// 	if err != nil {
+// 		return response, fmt.Errorf("failed to query payments: %v", err)
+// 	}
+// 	defer rows.Close()
+
+// 	for rows.Next() {
+// 		var processor string
+// 		var totalRequests int
+// 		var totalAmount float64
+
+// 		if err := rows.Scan(&processor, &totalRequests, &totalAmount); err != nil {
+// 			return response, fmt.Errorf("failed to scan row: %v", err)
+// 		}
+
+// 		summary := PaymentSummary{
+// 			TotalRequests: totalRequests,
+// 			TotalAmount:   totalAmount,
+// 		}
+
+// 		if processor == "default" {
+// 			response.Default = summary
+// 		} else if processor == "fallback" {
+// 			response.Fallback = summary
+// 		}
+// 	}
+
+// 	return response, nil
+// }
+
+func getAllPayments() ([]PaymentRecord, error) {
+	correlationIDs, err := rdb.SMembers(ctx, PAYMENTS_INDEX_KEY).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get correlation IDs: %v", err)
+	}
+
+	var payments []PaymentRecord
+
+	for _, correlationID := range correlationIDs {
+		paymentKey := fmt.Sprintf("%s%s", PAYMENTS_KEY_PREFIX, correlationID)
+		paymentData, err := rdb.Get(ctx, paymentKey).Result()
+		if err != nil {
+			log.Printf("Warning: failed to get payment %s: %v", paymentKey, err)
+			continue
+		}
+
+		var payment PaymentRecord
+		if err := json.Unmarshal([]byte(paymentData), &payment); err != nil {
+			log.Printf("Warning: failed to unmarshal payment %s: %v", paymentKey, err)
+			continue
+		}
+
+		payments = append(payments, payment)
+	}
+
+	return payments, nil
+}
+
 func getPaymentsSummary(fromTime, toTime *time.Time) (PaymentSummaryResponse, error) {
 	var response PaymentSummaryResponse
 
-	baseQuery := `
-	SELECT
-		processor,
-		COUNT (*) as total_requests,
-		COALESCE(SUM(amount), 0) as total_amount
-	FROM payments
-	WHERE 1=1`
-
-	args := []interface{}{}
-
-	if fromTime != nil {
-		baseQuery += " AND requested_at >= ?"
-		args = append(args, fromTime.Format("2006-01-02 15:04:05.000+00:00"))
-	}
-
-	if toTime != nil {
-		baseQuery += " AND requested_at <= ?"
-		args = append(args, toTime.Format("2006-01-02 15:04:05.000+00:00"))
-	}
-
-	baseQuery += " GROUP BY processor"
-
-	rows, err := db.Query(baseQuery, args...)
-
-	log.Printf("TESTE IGOR")
-	log.Println(baseQuery)
-	log.Println(args)
-	log.Println(rows)
-
+	payments, err := getAllPayments()
 	if err != nil {
-		return response, fmt.Errorf("failed to query payments: %v", err)
+		return response, err
 	}
-	defer rows.Close()
 
-	for rows.Next() {
-		var processor string
-		var totalRequests int
-		var totalAmount float64
+	var filteredPayments []PaymentRecord
+	for _, payment := range payments {
+		include := true
 
-		if err := rows.Scan(&processor, &totalRequests, &totalAmount); err != nil {
-			return response, fmt.Errorf("failed to scan row: %v", err)
+		if fromTime != nil && payment.RequestedAt.Before(*fromTime) {
+			include = false
 		}
 
-		summary := PaymentSummary{
-			TotalRequests: totalRequests,
-			TotalAmount:   totalAmount,
+		if toTime != nil && payment.RequestedAt.After(*toTime) {
+			include = false
 		}
 
-		if processor == "default" {
-			response.Default = summary
-		} else if processor == "fallback" {
-			response.Fallback = summary
+		if include {
+			filteredPayments = append(filteredPayments, payment)
 		}
 	}
+
+	defaultSummary := PaymentSummary{}
+	fallbackSummary := PaymentSummary{}
+
+	for _, payment := range filteredPayments {
+		if payment.Processor == "default" {
+			defaultSummary.TotalRequests++
+			defaultSummary.TotalAmount += payment.Amount
+		} else if payment.Processor == "fallback" {
+			fallbackSummary.TotalRequests++
+			fallbackSummary.TotalAmount += payment.Amount
+		}
+	}
+
+	response.Default = defaultSummary
+	response.Fallback = fallbackSummary
+
+	log.Printf("Summary - Default: %d requests, %.2f total. Fallback: %d requests, %.2f total",
+		defaultSummary.TotalRequests, defaultSummary.TotalAmount,
+		fallbackSummary.TotalRequests, fallbackSummary.TotalAmount)
 
 	return response, nil
 }
@@ -518,40 +624,75 @@ func paymentsSummaryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// func purgePaymentsHandler(w http.ResponseWriter, r *http.Request) {
+// 	if r.Method != http.MethodPost {
+// 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+// 		return
+// 	}
+
+// 	_, err := db.Exec("DELETE FROM payments")
+// 	if err != nil {
+// 		log.Printf("Error purging payments: %v", err)
+// 		http.Error(w, "Error purging payments", http.StatusInternalServerError)
+// 		return
+// 	}
+
+// 	log.Println("All payments purged from database")
+// 	w.WriteHeader(http.StatusOK)
+// }
+
 func purgePaymentsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	_, err := db.Exec("DELETE FROM payments")
+	// Get all correlation IDs
+	correlationIDs, err := rdb.SMembers(ctx, PAYMENTS_INDEX_KEY).Result()
 	if err != nil {
-		log.Printf("Error purging payments: %v", err)
+		log.Printf("Error getting correlation IDs for purge: %v", err)
 		http.Error(w, "Error purging payments", http.StatusInternalServerError)
 		return
 	}
 
-	log.Println("All payments purged from database")
+	// Delete all payment records
+	for _, correlationID := range correlationIDs {
+		paymentKey := fmt.Sprintf("%s%s", PAYMENTS_KEY_PREFIX, correlationID)
+		if err := rdb.Del(ctx, paymentKey).Err(); err != nil {
+			log.Printf("Warning: failed to delete payment %s: %v", paymentKey, err)
+		}
+	}
+
+	// Clear the index
+	if err := rdb.Del(ctx, PAYMENTS_INDEX_KEY).Err(); err != nil {
+		log.Printf("Error clearing payments index: %v", err)
+		http.Error(w, "Error purging payments", http.StatusInternalServerError)
+		return
+	}
+
+	log.Println("All payments purged from Redis")
 	w.WriteHeader(http.StatusOK)
 }
 
 func main() {
-	logFile, err := setupLogging()
+	// logFile, err := setupLogging()
 
-	if err != nil {
-		log.Fatalf("failed to set up logging: %v", err)
-	}
+	// if err != nil {
+	// 	log.Fatalf("failed to set up logging: %v", err)
+	// }
 
-	defer logFile.Close()
+	// defer logFile.Close()
+
+	setupLogging()
 
 	if err := initRedis(); err != nil {
 		log.Fatalf("failed to initialize Redis: %v", err)
 	}
 
-	if err := initDatabase(); err != nil {
-		log.Fatalf("failed to initialize database: %v", err)
-	}
-	defer db.Close()
+	// if err := initDatabase(); err != nil {
+	// 	log.Fatalf("failed to initialize database: %v", err)
+	// }
+	// defer db.Close()
 
 	startHealthChecker()
 	startWorkers()

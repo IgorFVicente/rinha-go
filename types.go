@@ -45,3 +45,10 @@ type PaymentSummaryResponse struct {
 	Default  PaymentSummary `json:"default"`
 	Fallback PaymentSummary `json:"fallback"`
 }
+
+type PaymentRecord struct {
+	CorrelationID string    `json:"correlationId"`
+	Amount        float64   `json:"amount"`
+	Processor     string    `json:"processor"`
+	RequestedAt   time.Time `json:"requestedAt"`
+}
