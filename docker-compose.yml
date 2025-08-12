@@ -29,6 +29,8 @@ services:
         limits:
           cpus: '0.5'
           memory: '100MB'
+    depends_on:
+      - redis
 
   api-2:
     build: .
@@ -46,6 +48,8 @@ services:
         limits:
           cpus: '0.5'
           memory: '100MB'
+    depends_on:
+      - redis
 
   nginx:
     image: nginx:alpine
@@ -61,6 +65,9 @@ services:
         limits:
           cpus: '0.2'
           memory: '50MB'
+    depends_on:
+      - api-1
+      - api-2
 
 networks:
   payment-network:

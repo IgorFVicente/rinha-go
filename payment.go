@@ -244,6 +244,7 @@ func getPaymentsSummary(fromTime, toTime *time.Time) (PaymentSummaryResponse, er
 	for _, payment := range payments {
 		include := true
 
+		fmt.Println(payment, fromTime, toTime)
 		if fromTime != nil && payment.RequestedAt.Before(*fromTime) {
 			include = false
 		}
