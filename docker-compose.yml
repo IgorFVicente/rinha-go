@@ -4,14 +4,14 @@ services:
     container_name: payment-redis
     ports:
       - "6379:6379"
-    # command: redis-server --appendonly yes
+    command: redis-server --appendonly yes
     networks:
       - payment-network
     deploy:
       resources:
         limits:
           cpus: '0.3'
-          memory: '100MB'
+          memory: '120MB'
 
   api-1:
     build: .
@@ -63,8 +63,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.2'
-          memory: '50MB'
+          cpus: '0.1'
+          memory: '30MB'
     depends_on:
       - api-1
       - api-2

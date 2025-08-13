@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	// _ "github.com/mattn/go-sqlite3"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -31,9 +31,9 @@ const (
 	RETRY_DELAY_QUEUE      = "payment_jobs_delayed"
 	PAYMENTS_KEY_PREFIX    = "payment:"
 	PAYMENTS_INDEX_KEY     = "payments_index"
-	MAX_RETRIES            = 3
+	MAX_RETRIES            = 1
 	RETRY_DELAY            = 2 * time.Second
-	WORKER_COUNT           = 39
+	WORKER_COUNT           = 30
 )
 
 func setupLogging() {

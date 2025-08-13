@@ -20,7 +20,14 @@ type RedisRepository struct {
 
 func NewRedisRepository(addr string) (*RedisRepository, error) {
 	rdb := redis.NewClient(&redis.Options{
-		Addr: addr,
+		Addr:         addr,
+		PoolSize:     100,
+		MinIdleConns: 10,
+		MaxRetries:   3,
+		DialTimeout:  5 * time.Second,
+		ReadTimeout:  3 * time.Second,
+		WriteTimeout: 3 * time.Second,
+		PoolTimeout:  4 * time.Second,
 	})
 
 	ctx := context.Background()
@@ -50,6 +57,7 @@ func (r *RedisRepository) StorePayment(correlationId string, amount float64, pro
 	}
 
 	paymentKey := fmt.Sprintf("%s%s", keyPrefix, correlationId)
+
 	err = r.client.Set(r.ctx, paymentKey, paymentData, 0).Err()
 	if err != nil {
 		return fmt.Errorf("failed to store payment: %v", err)
