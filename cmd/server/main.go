@@ -86,11 +86,15 @@ func main() {
 		log.Printf("Server starting on TCP port: %s", cfg.Port)
 	}
 
-	go func() {
-		if err := server.Serve(listener); err != nil {
-			log.Fatalf("Server failed to start: %v", err)
-		}
-	}()
+	// go func() {
+	// 	if err := server.Serve(listener); err != nil {
+	// 		log.Fatalf("Server failed to start: %v", err)
+	// 	}
+	// }()
+
+	if err := server.Serve(listener); err != nil {
+		log.Fatalf("Server failed to start: %v", err)
+	}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

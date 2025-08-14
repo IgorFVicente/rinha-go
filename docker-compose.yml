@@ -6,8 +6,7 @@ services:
       - "6379:6379"
     command: >
       redis-server 
-      --appendonly yes
-      --appendfsync everysec
+      --appendonly no
       --tcp-keepalive 60
       --timeout 0
     networks:

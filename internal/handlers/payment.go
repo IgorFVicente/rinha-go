@@ -23,12 +23,13 @@ func NewPaymentHandler(paymentService *services.PaymentService, queueService *se
 }
 
 func (h *PaymentHandler) HandlePayments(ctx *fasthttp.RequestCtx) {
-	if err := h.queueService.EnqueueJob(ctx.PostBody()); err != nil {
-		log.Printf("Error enqueuing raw job: %v", err)
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-		ctx.SetBodyString("Error processing request")
-		return
-	}
+	body := append([]byte(nil), ctx.PostBody()...)
+
+	go func() {
+		if err := h.queueService.EnqueueJob(body); err != nil {
+			log.Printf("Error enqueuing raw job: %v", err)
+		}
+	}()
 
 	ctx.SetStatusCode(fasthttp.StatusAccepted)
 }

@@ -20,8 +20,8 @@ type RedisRepository struct {
 func NewRedisRepository(addr string) (*RedisRepository, error) {
 	rdb := redis.NewClient(&redis.Options{
 		Addr:            addr,
-		PoolSize:        500,
-		MinIdleConns:    20,
+		PoolSize:        1024,
+		MinIdleConns:    64,
 		PoolTimeout:     2 * time.Second,
 		DialTimeout:     2 * time.Second,
 		ReadTimeout:     1 * time.Second,
