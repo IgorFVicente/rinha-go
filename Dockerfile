@@ -1,6 +1,6 @@
 FROM golang:1.24-alpine AS builder
 
-RUN apk add --no-cache gcc musl-dev sqlite-dev
+RUN apk add --no-cache 
 
 WORKDIR /app
 
@@ -10,7 +10,7 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=1 go build -a -installsuffix cgo -o payment-service ./cmd/server
+RUN go build -o payment-service ./cmd/server
 
 FROM alpine:latest
 
