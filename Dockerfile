@@ -10,11 +10,11 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=1 go build -a -installsuffix cgo -o payment-service .
+RUN CGO_ENABLED=1 go build -a -installsuffix cgo -o payment-service ./cmd/server
 
 FROM alpine:latest
 
-RUN apk --no-cache add ca-certificates sqlite
+RUN apk --no-cache add ca-certificates
 
 WORKDIR /root/
 

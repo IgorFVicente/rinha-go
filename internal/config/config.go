@@ -26,9 +26,6 @@ type Config struct {
 	PaymentsKeyPrefix string
 	PaymentsIndexKey  string
 
-	// Retry configuration
-	MaxRetries  int
-	RetryDelay  time.Duration
 	WorkerCount int
 }
 
@@ -43,9 +40,7 @@ func Load() *Config {
 		RetryDelayQueue:      getEnv("RETRY_DELAY_QUEUE", "payment_jobs_delayed"),
 		PaymentsKeyPrefix:    getEnv("PAYMENTS_KEY_PREFIX", "payment:"),
 		PaymentsIndexKey:     getEnv("PAYMENTS_INDEX_KEY", "payments_index"),
-		MaxRetries:           getIntEnv("MAX_RETRIES", 3),
-		RetryDelay:           getDurationEnv("RETRY_DELAY", 2*time.Second),
-		WorkerCount:          getIntEnv("WORKER_COUNT", 39),
+		WorkerCount:          getIntEnv("WORKER_COUNT", 20),
 	}
 }
 

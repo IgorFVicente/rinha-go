@@ -1,6 +1,7 @@
 package services
 
 import (
+	"encoding/json"
 	"log"
 	"time"
 
@@ -10,9 +11,8 @@ import (
 )
 
 type QueueService struct {
-	repo   *repository.RedisRepository
-	cfg    *config.Config
-	ticker *time.Ticker
+	repo *repository.RedisRepository
+	cfg  *config.Config
 }
 
 func NewQueueService(repo *repository.RedisRepository, cfg *config.Config) *QueueService {
@@ -22,12 +22,8 @@ func NewQueueService(repo *repository.RedisRepository, cfg *config.Config) *Queu
 	}
 }
 
-func (q *QueueService) EnqueueJob(job models.PaymentJob) error {
-	return q.repo.EnqueueJob(job, q.cfg.PaymentQueue)
-}
-
-func (q *QueueService) EnqueueDelayedJob(job models.PaymentJob, delay time.Duration) error {
-	return q.repo.EnqueueDelayedJob(job, delay, q.cfg.RetryDelayQueue)
+func (q *QueueService) EnqueueJob(rawJSON []byte) error {
+	return q.repo.EnqueueJob(rawJSON, q.cfg.PaymentQueue)
 }
 
 func (q *QueueService) StartWorkers(paymentService *PaymentService) {
@@ -36,59 +32,31 @@ func (q *QueueService) StartWorkers(paymentService *PaymentService) {
 	}
 }
 
-func (q *QueueService) StartDelayedJobProcessor() {
-	q.ticker = time.NewTicker(5 * time.Second)
-	go func() {
-		for range q.ticker.C {
-			q.processDelayedJobs()
-		}
-	}()
-}
-
 func (q *QueueService) worker(workerID int, paymentService *PaymentService) {
 	log.Printf("Worker %d started", workerID)
 
 	for {
-		job, err := q.repo.DequeueJob(q.cfg.PaymentQueue)
+		rawJob, err := q.repo.DequeueJob(q.cfg.PaymentQueue)
 		if err != nil {
-			log.Printf("Worker %d: Error getting job from queue: %v", workerID, err)
-			time.Sleep(time.Second)
 			continue
 		}
 
-		log.Printf("Worker %d: Processing job %s", workerID, job.CorrelationId)
+		var paymentData models.PaymentData
+		if err := json.Unmarshal(rawJob, &paymentData); err != nil {
+			log.Printf("Worker %d: Error unmarshaling job: %v", workerID, err)
+			continue
+		}
+
+		job := models.PaymentJob{
+			CorrelationId: paymentData.CorrelationId,
+			Amount:        paymentData.Amount,
+			RequestedAt:   time.Now().UTC().Truncate(time.Millisecond),
+		}
 
 		if err := paymentService.ProcessPayment(job); err != nil {
-			job.RetryCount++
-
-			if job.RetryCount >= job.MaxRetries {
-				log.Printf("Worker %d: Job %s exceeded max retries (%d), discarding",
-					workerID, job.CorrelationId, job.MaxRetries)
-				continue
-			}
-
-			log.Printf("Worker %d: Job %s failed, scheduling retry %d/%d",
-				workerID, job.CorrelationId, job.RetryCount, job.MaxRetries)
-
-			if err := q.EnqueueDelayedJob(job, q.cfg.RetryDelay); err != nil {
-				log.Printf("Worker %d: Error enqueuing delayed job: %v", workerID, err)
+			if err := q.EnqueueJob(rawJob); err != nil {
+				log.Printf("Worker %d: Error requeuing job %s: %v", workerID, job.CorrelationId, err)
 			}
 		}
-	}
-}
-
-func (q *QueueService) processDelayedJobs() {
-	jobs, err := q.repo.GetDelayedJobs(q.cfg.RetryDelayQueue)
-	if err != nil {
-		log.Printf("Error getting delayed jobs: %v", err)
-		return
-	}
-
-	for _, job := range jobs {
-		if err := q.repo.MoveDelayedJobToMainQueue(job, q.cfg.PaymentQueue, q.cfg.RetryDelayQueue); err != nil {
-			log.Printf("Error moving delayed job to main queue: %v", err)
-			continue
-		}
-		log.Printf("Moved delayed job back to queue: %s", job.CorrelationId)
 	}
 }

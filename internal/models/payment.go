@@ -11,8 +11,6 @@ type PaymentJob struct {
 	CorrelationId string    `json:"correlationId"`
 	Amount        float64   `json:"amount"`
 	RequestedAt   time.Time `json:"requestedAt"`
-	RetryCount    int       `json:"retryCount"`
-	MaxRetries    int       `json:"maxRetries"`
 }
 
 type ForwardedPaymentData struct {

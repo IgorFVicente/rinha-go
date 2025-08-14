@@ -1,11 +1,12 @@
 package main
 
 import (
-	"context"
 	"log"
-	"net/http"
+	"net"
 	"os"
 	"os/signal"
+	"runtime"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -14,71 +15,93 @@ import (
 	"payment-service/internal/repository"
 	"payment-service/internal/services"
 	"payment-service/internal/utils"
+
+	"github.com/valyala/fasthttp"
 )
 
 func main() {
-	// Setup logging
+	if gomaxprocs := os.Getenv("GOMAXPROCS"); gomaxprocs != "" {
+		if n, err := strconv.Atoi(gomaxprocs); err == nil {
+			runtime.GOMAXPROCS(n)
+		}
+	}
+
 	utils.SetupLogging()
 
-	// Load configuration
 	cfg := config.Load()
 
-	// Initialize Redis repository
 	repo, err := repository.NewRedisRepository(cfg.RedisAddr)
 	if err != nil {
 		log.Fatalf("Failed to initialize Redis repository: %v", err)
 	}
 
-	// Initialize services
 	healthService := services.NewHealthService(cfg)
 	queueService := services.NewQueueService(repo, cfg)
 	paymentService := services.NewPaymentService(repo, healthService, cfg)
 
-	// Start background services
 	healthService.Start()
 	queueService.StartWorkers(paymentService)
-	queueService.StartDelayedJobProcessor()
 
-	// Setup HTTP handlers
 	paymentHandler := handlers.NewPaymentHandler(paymentService, queueService)
 
-	// Setup routes
-	mux := http.NewServeMux()
-	mux.HandleFunc("/payments", paymentHandler.HandlePayments)
-	mux.HandleFunc("/payments-summary", paymentHandler.HandlePaymentsSummary)
-	mux.HandleFunc("/purge-payments", paymentHandler.HandlePurgePayments)
+	router := func(ctx *fasthttp.RequestCtx) {
+		path := string(ctx.Path())
+		method := string(ctx.Method())
 
-	// Create server
-	server := &http.Server{
-		Addr:         ":" + cfg.Port,
-		Handler:      mux,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		switch {
+		case method == "POST" && path == "/payments":
+			paymentHandler.HandlePayments(ctx)
+		case method == "GET" && path == "/payments-summary":
+			paymentHandler.HandlePaymentsSummary(ctx)
+		case method == "POST" && path == "/purge-payments":
+			paymentHandler.HandlePurgePayments(ctx)
+		default:
+			ctx.SetStatusCode(fasthttp.StatusNotFound)
+			ctx.SetBodyString("Not Found")
+		}
 	}
 
-	// Start server in a goroutine
+	server := &fasthttp.Server{
+		Handler:      router,
+		IdleTimeout:  60 * time.Second,
+		TCPKeepalive: true,
+	}
+
+	var listener net.Listener
+	if sock := os.Getenv("SOCK"); sock != "" {
+		os.Remove(sock)
+		listener, err = net.Listen("unix", sock)
+		if err != nil {
+			log.Fatalf("Failed to create Unix socket listener: %v", err)
+		}
+		if err := os.Chmod(sock, 0666); err != nil {
+			log.Fatalf("Failed to set socket permissions: %v", err)
+		}
+		log.Printf("Server starting on Unix socket: %s", sock)
+	} else {
+		listener, err = net.Listen("tcp", ":"+cfg.Port)
+		if err != nil {
+			log.Fatalf("Failed to create TCP listener: %v", err)
+		}
+		log.Printf("Server starting on TCP port: %s", cfg.Port)
+	}
+
 	go func() {
-		log.Printf("Server starting on port %s", cfg.Port)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := server.Serve(listener); err != nil {
 			log.Fatalf("Server failed to start: %v", err)
 		}
 	}()
 
-	// Wait for interrupt signal to gracefully shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
 	log.Println("Shutting down server...")
 
-	// Graceful shutdown
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	if err := server.Shutdown(ctx); err != nil {
+	if err := server.Shutdown(); err != nil {
 		log.Fatalf("Server forced to shutdown: %v", err)
 	}
 
+	healthService.Stop()
 	log.Println("Server exited")
 }

@@ -2,20 +2,17 @@ package handlers
 
 import (
 	"encoding/json"
-	"io"
 	"log"
-	"net/http"
 	"time"
 
-	"payment-service/internal/config"
-	"payment-service/internal/models"
 	"payment-service/internal/services"
+
+	"github.com/valyala/fasthttp"
 )
 
 type PaymentHandler struct {
 	paymentService *services.PaymentService
 	queueService   *services.QueueService
-	cfg            *config.Config
 }
 
 func NewPaymentHandler(paymentService *services.PaymentService, queueService *services.QueueService) *PaymentHandler {
@@ -25,64 +22,36 @@ func NewPaymentHandler(paymentService *services.PaymentService, queueService *se
 	}
 }
 
-func (h *PaymentHandler) HandlePayments(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+func (h *PaymentHandler) HandlePayments(ctx *fasthttp.RequestCtx) {
+	if err := h.queueService.EnqueueJob(ctx.PostBody()); err != nil {
+		log.Printf("Error enqueuing raw job: %v", err)
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetBodyString("Error processing request")
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		log.Printf("Error reading request body: %v", err)
-		http.Error(w, "Error reading request body", http.StatusBadRequest)
-		return
-	}
-	defer r.Body.Close()
-
-	var paymentData models.PaymentData
-	if err := json.Unmarshal(body, &paymentData); err != nil {
-		log.Printf("Error parsing JSON: %v", err)
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
-		return
-	}
-
-	job := models.PaymentJob{
-		CorrelationId: paymentData.CorrelationId,
-		Amount:        paymentData.Amount,
-		RequestedAt:   time.Now().UTC().Truncate(time.Millisecond),
-		RetryCount:    0,
-		MaxRetries:    3, // This could come from config
-	}
-
-	if err := h.queueService.EnqueueJob(job); err != nil {
-		log.Printf("Error enqueuing payment job: %v", err)
-		http.Error(w, "Error processing request", http.StatusInternalServerError)
-		return
-	}
-
-	w.WriteHeader(http.StatusAccepted)
+	ctx.SetStatusCode(fasthttp.StatusAccepted)
 }
 
-func (h *PaymentHandler) HandlePaymentsSummary(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+func (h *PaymentHandler) HandlePaymentsSummary(ctx *fasthttp.RequestCtx) {
 	var fromTime, toTime *time.Time
 
-	if fromStr := r.URL.Query().Get("from"); fromStr != "" {
+	if fromBytes := ctx.QueryArgs().Peek("from"); len(fromBytes) > 0 {
+		fromStr := string(fromBytes)
 		if parsed, err := time.Parse(time.RFC3339Nano, fromStr); err != nil {
-			http.Error(w, "invalid 'from' time format. Use RFC3339, e.g. 2006-01-02T15:04:05.000Z", http.StatusBadRequest)
+			ctx.SetStatusCode(fasthttp.StatusBadRequest)
+			ctx.SetBodyString("invalid 'from' time format. Use RFC3339, e.g. 2006-01-02T15:04:05.000Z")
 			return
 		} else {
 			fromTime = &parsed
 		}
 	}
 
-	if toStr := r.URL.Query().Get("to"); toStr != "" {
+	if toBytes := ctx.QueryArgs().Peek("to"); len(toBytes) > 0 {
+		toStr := string(toBytes)
 		if parsed, err := time.Parse(time.RFC3339Nano, toStr); err != nil {
-			http.Error(w, "invalid 'to' time format. Use RFC3339, e.g. 2006-01-02T15:04:05.000Z", http.StatusBadRequest)
+			ctx.SetStatusCode(fasthttp.StatusBadRequest)
+			ctx.SetBodyString("invalid 'to' time format. Use RFC3339, e.g. 2006-01-02T15:04:05.000Z")
 			return
 		} else {
 			toTime = &parsed
@@ -92,29 +61,30 @@ func (h *PaymentHandler) HandlePaymentsSummary(w http.ResponseWriter, r *http.Re
 	summary, err := h.paymentService.GetPaymentsSummary(fromTime, toTime)
 	if err != nil {
 		log.Printf("error getting payment summary: %v", err)
-		http.Error(w, "error retrieving payment summary", http.StatusInternalServerError)
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetBodyString("error retrieving payment summary")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(summary); err != nil {
-		log.Printf("error encoding JSON response: %v", err)
-		http.Error(w, "error encoding response", http.StatusInternalServerError)
+	jsonData, err := json.Marshal(summary)
+	if err != nil {
+		log.Printf("error marshaling payment summary: %v", err)
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetBodyString("error processing payment summary")
 		return
 	}
+
+	ctx.SetContentType("application/json")
+	ctx.SetBody(jsonData)
 }
 
-func (h *PaymentHandler) HandlePurgePayments(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+func (h *PaymentHandler) HandlePurgePayments(ctx *fasthttp.RequestCtx) {
 	if err := h.paymentService.PurgePayments(); err != nil {
 		log.Printf("Error purging payments: %v", err)
-		http.Error(w, "Error purging payments", http.StatusInternalServerError)
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetBodyString("Error purging payments")
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
+	ctx.SetStatusCode(fasthttp.StatusOK)
 }

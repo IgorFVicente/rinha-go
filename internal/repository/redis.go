@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -20,14 +19,15 @@ type RedisRepository struct {
 
 func NewRedisRepository(addr string) (*RedisRepository, error) {
 	rdb := redis.NewClient(&redis.Options{
-		Addr:         addr,
-		PoolSize:     100,
-		MinIdleConns: 10,
-		MaxRetries:   3,
-		DialTimeout:  5 * time.Second,
-		ReadTimeout:  3 * time.Second,
-		WriteTimeout: 3 * time.Second,
-		PoolTimeout:  4 * time.Second,
+		Addr:            addr,
+		PoolSize:        500,
+		MinIdleConns:    20,
+		PoolTimeout:     2 * time.Second,
+		DialTimeout:     2 * time.Second,
+		ReadTimeout:     1 * time.Second,
+		WriteTimeout:    1 * time.Second,
+		MaxRetries:      1,
+		MaxRetryBackoff: 256 * time.Millisecond,
 	})
 
 	ctx := context.Background()
@@ -58,17 +58,16 @@ func (r *RedisRepository) StorePayment(correlationId string, amount float64, pro
 
 	paymentKey := fmt.Sprintf("%s%s", keyPrefix, correlationId)
 
-	err = r.client.Set(r.ctx, paymentKey, paymentData, 0).Err()
+	pipe := r.client.Pipeline()
+	pipe.Set(r.ctx, paymentKey, paymentData, 0)
+	pipe.SAdd(r.ctx, indexKey, correlationId)
+
+	_, err = pipe.Exec(r.ctx)
 	if err != nil {
 		return fmt.Errorf("failed to store payment: %v", err)
 	}
 
-	err = r.client.SAdd(r.ctx, indexKey, correlationId).Err()
-	if err != nil {
-		return fmt.Errorf("failed to add payment to index: %v", err)
-	}
-
-	log.Printf("Payment stored: %s, %.2f, %s", correlationId, amount, processor)
+	// log.Printf("Payment stored: %s, %.2f, %s", correlationId, amount, processor)
 	return nil
 }
 
@@ -80,139 +79,78 @@ func (r *RedisRepository) GetAllPayments(keyPrefix, indexKey string) ([]models.P
 
 	var payments []models.PaymentRecord
 
-	for _, correlationID := range correlationIDs {
-		paymentKey := fmt.Sprintf("%s%s", keyPrefix, correlationID)
-		paymentData, err := r.client.Get(r.ctx, paymentKey).Result()
-		if err != nil {
-			log.Printf("Warning: failed to get payment %s: %v", paymentKey, err)
-			continue
+	// Use pipeline to fetch all payments at once for better performance
+	if len(correlationIDs) > 0 {
+		pipe := r.client.Pipeline()
+		cmds := make(map[string]*redis.StringCmd)
+
+		for _, correlationID := range correlationIDs {
+			paymentKey := fmt.Sprintf("%s%s", keyPrefix, correlationID)
+			cmds[correlationID] = pipe.Get(r.ctx, paymentKey)
 		}
 
-		var payment models.PaymentRecord
-		if err := json.Unmarshal([]byte(paymentData), &payment); err != nil {
-			log.Printf("Warning: failed to unmarshal payment %s: %v", paymentKey, err)
-			continue
+		_, err = pipe.Exec(r.ctx)
+		if err != nil && err != redis.Nil {
+			return nil, fmt.Errorf("failed to get payments: %v", err)
 		}
 
-		payments = append(payments, payment)
+		for correlationID, cmd := range cmds {
+			paymentData, err := cmd.Result()
+			if err != nil {
+				log.Printf("Warning: failed to get payment %s: %v", correlationID, err)
+				continue
+			}
+
+			var payment models.PaymentRecord
+			if err := json.Unmarshal([]byte(paymentData), &payment); err != nil {
+				log.Printf("Warning: failed to unmarshal payment %s: %v", correlationID, err)
+				continue
+			}
+
+			payments = append(payments, payment)
+		}
 	}
 
 	return payments, nil
 }
 
 func (r *RedisRepository) PurgePayments(keyPrefix, indexKey string) error {
-	// Get all correlation IDs
 	correlationIDs, err := r.client.SMembers(r.ctx, indexKey).Result()
 	if err != nil {
 		return fmt.Errorf("error getting correlation IDs for purge: %v", err)
 	}
 
-	// Delete all payment records
-	for _, correlationID := range correlationIDs {
-		paymentKey := fmt.Sprintf("%s%s", keyPrefix, correlationID)
-		if err := r.client.Del(r.ctx, paymentKey).Err(); err != nil {
-			log.Printf("Warning: failed to delete payment %s: %v", paymentKey, err)
-		}
-	}
+	if len(correlationIDs) > 0 {
+		// Use pipeline for batch deletion
+		pipe := r.client.Pipeline()
 
-	// Clear the index
-	if err := r.client.Del(r.ctx, indexKey).Err(); err != nil {
-		return fmt.Errorf("error clearing payments index: %v", err)
+		for _, correlationID := range correlationIDs {
+			paymentKey := fmt.Sprintf("%s%s", keyPrefix, correlationID)
+			pipe.Del(r.ctx, paymentKey)
+		}
+
+		pipe.Del(r.ctx, indexKey)
+
+		_, err = pipe.Exec(r.ctx)
+		if err != nil {
+			return fmt.Errorf("error purging payments: %v", err)
+		}
+	} else {
+		r.client.Del(r.ctx, indexKey)
 	}
 
 	log.Println("All payments purged from Redis")
 	return nil
 }
 
-func (r *RedisRepository) EnqueueJob(job models.PaymentJob, queueName string) error {
-	jobData, err := json.Marshal(job)
-	if err != nil {
-		return fmt.Errorf("failed to marshall job: %v", err)
-	}
-
-	err = r.client.LPush(r.ctx, queueName, jobData).Err()
-	if err != nil {
-		return fmt.Errorf("failed to enqueue job: %v", err)
-	}
-
-	log.Printf("Job enqueued: %s", job.CorrelationId)
-	return nil
+func (r *RedisRepository) EnqueueJob(rawJSON []byte, queueName string) error {
+	return r.client.LPush(r.ctx, queueName, rawJSON).Err()
 }
 
-func (r *RedisRepository) EnqueueDelayedJob(job models.PaymentJob, delay time.Duration, delayQueueName string) error {
-	jobData, err := json.Marshal(job)
-	if err != nil {
-		return fmt.Errorf("failed to marshall delayed job: %v", err)
-	}
-
-	score := float64(time.Now().Add(delay).Unix())
-	err = r.client.ZAdd(r.ctx, delayQueueName, redis.Z{
-		Score:  score,
-		Member: jobData,
-	}).Err()
-
-	if err != nil {
-		return fmt.Errorf("failed to enqueue delayed job: %v", err)
-	}
-
-	log.Printf("Delayed job enqueued: %s, retry in %v", job.CorrelationId, delay)
-	return nil
-}
-
-func (r *RedisRepository) DequeueJob(queueName string) (models.PaymentJob, error) {
+func (r *RedisRepository) DequeueJob(queueName string) ([]byte, error) {
 	result, err := r.client.BRPop(r.ctx, 0, queueName).Result()
-	if err != nil {
-		return models.PaymentJob{}, err
-	}
-
-	jobData := result[1]
-	var job models.PaymentJob
-	if err := json.Unmarshal([]byte(jobData), &job); err != nil {
-		return models.PaymentJob{}, fmt.Errorf("error unmarshaling job: %v", err)
-	}
-
-	return job, nil
-}
-
-func (r *RedisRepository) GetDelayedJobs(delayQueueName string) ([]models.PaymentJob, error) {
-	now := float64(time.Now().Unix())
-
-	result, err := r.client.ZRangeByScoreWithScores(r.ctx, delayQueueName, &redis.ZRangeBy{
-		Min: "0",
-		Max: strconv.FormatFloat(now, 'f', 0, 64),
-	}).Result()
-
 	if err != nil {
 		return nil, err
 	}
-
-	var jobs []models.PaymentJob
-	for _, z := range result {
-		jobData := z.Member.(string)
-
-		var job models.PaymentJob
-		if err := json.Unmarshal([]byte(jobData), &job); err != nil {
-			log.Printf("Error unmarshaling delayed job: %v", err)
-			continue
-		}
-
-		jobs = append(jobs, job)
-	}
-
-	return jobs, nil
-}
-
-func (r *RedisRepository) MoveDelayedJobToMainQueue(job models.PaymentJob, mainQueueName, delayQueueName string) error {
-	jobData, err := json.Marshal(job)
-	if err != nil {
-		return err
-	}
-
-	err = r.client.LPush(r.ctx, mainQueueName, jobData).Err()
-	if err != nil {
-		return fmt.Errorf("error moving delayed job to main queue: %v", err)
-	}
-
-	r.client.ZRem(r.ctx, delayQueueName, jobData)
-	return nil
+	return []byte(result[1]), nil
 }

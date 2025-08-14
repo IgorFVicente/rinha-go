@@ -4,14 +4,19 @@ services:
     container_name: payment-redis
     ports:
       - "6379:6379"
-    command: redis-server --appendonly yes
+    command: >
+      redis-server 
+      --appendonly yes
+      --appendfsync everysec
+      --tcp-keepalive 60
+      --timeout 0
     networks:
       - payment-network
     deploy:
       resources:
         limits:
-          cpus: '0.3'
-          memory: '120MB'
+          cpus: '0.2'
+          memory: '50MB'
 
   api-1:
     build: .
@@ -28,7 +33,7 @@ services:
       resources:
         limits:
           cpus: '0.5'
-          memory: '100MB'
+          memory: '125MB'
     depends_on:
       - redis
 
@@ -47,7 +52,7 @@ services:
       resources:
         limits:
           cpus: '0.5'
-          memory: '100MB'
+          memory: '125MB'
     depends_on:
       - redis
 
@@ -63,8 +68,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.1'
-          memory: '30MB'
+          cpus: '0.3'
+          memory: '50MB'
     depends_on:
       - api-1
       - api-2
