@@ -14,7 +14,6 @@ import (
 	"payment-service/internal/handlers"
 	"payment-service/internal/repository"
 	"payment-service/internal/services"
-	"payment-service/internal/utils"
 
 	"github.com/valyala/fasthttp"
 )
@@ -25,8 +24,6 @@ func main() {
 			runtime.GOMAXPROCS(n)
 		}
 	}
-
-	utils.SetupLogging()
 
 	cfg := config.Load()
 

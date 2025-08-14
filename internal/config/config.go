@@ -7,20 +7,15 @@ import (
 )
 
 type Config struct {
-	// Server configuration
 	Port string
 
-	// Redis configuration
 	RedisAddr string
 
-	// Payment processor URLs
 	DefaultProcessorURL  string
 	FallbackProcessorURL string
 
-	// Health check configuration
 	HealthCheckInterval time.Duration
 
-	// Queue configuration
 	PaymentQueue      string
 	RetryDelayQueue   string
 	PaymentsKeyPrefix string

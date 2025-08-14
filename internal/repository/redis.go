@@ -67,7 +67,6 @@ func (r *RedisRepository) StorePayment(correlationId string, amount float64, pro
 		return fmt.Errorf("failed to store payment: %v", err)
 	}
 
-	// log.Printf("Payment stored: %s, %.2f, %s", correlationId, amount, processor)
 	return nil
 }
 
@@ -79,7 +78,6 @@ func (r *RedisRepository) GetAllPayments(keyPrefix, indexKey string) ([]models.P
 
 	var payments []models.PaymentRecord
 
-	// Use pipeline to fetch all payments at once for better performance
 	if len(correlationIDs) > 0 {
 		pipe := r.client.Pipeline()
 		cmds := make(map[string]*redis.StringCmd)
@@ -121,7 +119,6 @@ func (r *RedisRepository) PurgePayments(keyPrefix, indexKey string) error {
 	}
 
 	if len(correlationIDs) > 0 {
-		// Use pipeline for batch deletion
 		pipe := r.client.Pipeline()
 
 		for _, correlationID := range correlationIDs {

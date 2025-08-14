@@ -29,28 +29,19 @@ func NewPaymentService(repo *repository.RedisRepository, healthService *HealthSe
 }
 
 func (p *PaymentService) ProcessPayment(job models.PaymentJob) error {
-	// Always try default processor first
+
 	if err := p.tryProcessWithDefault(job); err == nil {
-		// Success with default - mark it as healthy
 		p.healthService.MarkDefaultProcessorHealthy()
 		return nil
 	}
-
-	// Default failed - mark it as unhealthy
 	p.healthService.MarkDefaultProcessorUnhealthy()
 
-	// Check if fallback is healthy (managed by health service)
 	if p.healthService.IsFallbackProcessorHealthy() {
 		if err := p.tryProcessWithFallback(job); err == nil {
-			// Success with fallback - don't change fallback status
-			// (health service manages fallback status independently)
 			return nil
 		}
-		// Fallback failed but we don't mark it as unhealthy here
-		// The health service will detect this through its own monitoring
 	}
 
-	// Both failed or fallback is unhealthy - return error to requeue
 	return fmt.Errorf("both processors failed or unavailable")
 }
 
@@ -62,7 +53,6 @@ func (p *PaymentService) tryProcessWithDefault(job models.PaymentJob) error {
 	}
 
 	if err := p.forwardPayment(p.cfg.DefaultProcessorURL, forwardedData); err != nil {
-		// log.Printf("Default processor failed for job %s: %v", job.CorrelationId, err)
 		return err
 	}
 
@@ -70,7 +60,6 @@ func (p *PaymentService) tryProcessWithDefault(job models.PaymentJob) error {
 		log.Printf("Error storing payment for job %s: %v", job.CorrelationId, err)
 	}
 
-	// log.Printf("Job processed successfully with DEFAULT processor: %s", job.CorrelationId)
 	return nil
 }
 
@@ -82,16 +71,12 @@ func (p *PaymentService) tryProcessWithFallback(job models.PaymentJob) error {
 	}
 
 	if err := p.forwardPayment(p.cfg.FallbackProcessorURL, forwardedData); err != nil {
-		// log.Printf("Fallback processor failed for job %s: %v", job.CorrelationId, err)
 		return err
 	}
-
-	// Store successful payment
 	if err := p.repo.StorePayment(job.CorrelationId, job.Amount, "fallback", job.RequestedAt, p.cfg.PaymentsKeyPrefix, p.cfg.PaymentsIndexKey); err != nil {
 		log.Printf("Error storing payment for job %s: %v", job.CorrelationId, err)
 	}
 
-	// log.Printf("Job processed successfully with FALLBACK processor: %s", job.CorrelationId)
 	return nil
 }
 

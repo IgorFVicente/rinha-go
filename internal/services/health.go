@@ -32,11 +32,8 @@ func NewHealthService(cfg *config.Config) *HealthService {
 }
 
 func (h *HealthService) Start() {
-	// Initial health check
 	h.updateHealthCache()
 
-	// Start periodic health checking for fallback only
-	// Default processor health is managed by payment service
 	h.ticker = time.NewTicker(h.cfg.HealthCheckInterval)
 	go func() {
 		for {
@@ -57,7 +54,6 @@ func (h *HealthService) Stop() {
 	close(h.stopChan)
 }
 
-// Methods called by payment service to manage default processor health
 func (h *HealthService) MarkDefaultProcessorHealthy() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -76,7 +72,6 @@ func (h *HealthService) MarkDefaultProcessorUnhealthy() {
 	}
 }
 
-// Method for payment service to check fallback health
 func (h *HealthService) IsFallbackProcessorHealthy() bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
